@@ -48,7 +48,7 @@ void PskDemod::configure(const DemodConfig& cfg, uint32_t sample_rate) {
     // A wideband capture delivers far more samples per symbol than the
     // demodulator wants (10 MSPS on a 294 kbaud LRIT carrier is sps 34, and the
     // RRC filter alone then costs more than a Pi 4 core). Decimate to the
-    // configured samples/symbol first; the boxcar doubles as the anti-alias.
+    // configured samples/symbol first, through the anti-alias FIR below.
     const int target_sps = cfg_.max_sps >= 2 ? cfg_.max_sps : 3;
     if (cfg_.symbol_rate > 0.0) {
         const double want = static_cast<double>(sample_rate_) /
@@ -67,12 +67,18 @@ void PskDemod::configure(const DemodConfig& cfg, uint32_t sample_rate) {
     }
 
     oqpsk_ = (cfg_.constellation == Constellation::OQPSK);
+    fixed_timing_ = std::getenv("ED_FIXED_TIMING") != nullptr;
+    fixed_phase_ = 0.0;
+    if (fixed_timing_) {
+        const char* p = std::getenv("ED_FIXED_PHASE");
+        if (p != nullptr) { fixed_phase_ = std::atof(p); }
+    }
     const int order = (cfg_.constellation == Constellation::BPSK) ? 2 : 4;
 
     // Anti-alias filter at the input rate, cutoff just under the decimated
     // Nyquist, long enough to matter (8 taps per output sample).
     {
-        const std::size_t taps = 8 * decim_ + 1;
+        const std::size_t taps = 4 * decim_ + 1;
         const double fc = 0.42 / static_cast<double>(decim_);  // cycles/sample in
         aa_taps_.assign(taps, 0.0f);
         double sum = 0.0;
@@ -141,6 +147,7 @@ void PskDemod::reset() {
     corr_phase_ = 0.0;
     acq_buf_.clear();
     rms_ = 0.0;
+    agc_gain_ = 1.0f;
     if (sym_dump_ == nullptr) {
         const char* path = std::getenv("ED_DUMP_PSK_SYMS");
         if (path != nullptr) {
@@ -235,13 +242,27 @@ void PskDemod::process_block(const std::complex<float>* iq, std::size_t n,
     if (decim_ > 1) {
         dec_buf_.clear();
         dec_buf_.reserve(n / decim_ + 2);
+        const std::size_t taps = aa_taps_.size();
         for (std::size_t i = 0; i < n; ++i) {
-            dec_sum_ += src[i];
-            if (++dec_count_ >= decim_) {
-                dec_buf_.push_back(dec_sum_ / static_cast<float>(decim_));
-                dec_sum_ = std::complex<float>(0.0f, 0.0f);
-                dec_count_ = 0;
+            aa_line_[aa_pos_] = src[i];
+            if (++aa_pos_ >= taps) {
+                aa_pos_ = 0;
             }
+            if (++dec_count_ < decim_) {
+                continue;
+            }
+            // One FIR output per decim_ inputs. The taps are symmetric, so the
+            // traversal start does not matter.
+            std::complex<float> acc(0.0f, 0.0f);
+            std::size_t idx = aa_pos_;
+            for (std::size_t k = 0; k < taps; ++k) {
+                acc += aa_taps_[k] * aa_line_[idx];
+                if (++idx >= taps) {
+                    idx = 0;
+                }
+            }
+            dec_buf_.push_back(acc);
+            dec_count_ = 0;
         }
         src = dec_buf_.data();
         n = dec_buf_.size();
@@ -259,8 +280,25 @@ void PskDemod::process_block(const std::complex<float>* iq, std::size_t n,
     // the rails cross-couple and inverts the Gardner timing S-curve.
     // Debug hook: dump the demapped symbols for comparison against a reference
     // demodulator on the same capture.
-    costas_buf_.resize(n);
-    costas_.process(rrc_buf_.data(), n, costas_buf_.data());
+    // AGC to the unit circle before the carrier loop, as SatDump does. Without
+    // it every loop gain scales with the front end's amplitude (about 0.03
+    // here), which is why the loops only held on strong passes.
+    if (agc_enabled_) {
+        agc_buf_.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::complex<float> out = rrc_buf_[i] * agc_gain_;
+            const float mag = std::abs(out);
+            agc_gain_ += kAgcRate * (1.0f - mag);
+            if (agc_gain_ > 65536.0f) { agc_gain_ = 65536.0f; }
+            if (agc_gain_ < 0.0f) { agc_gain_ = 0.0f; }
+            agc_buf_[i] = out;
+        }
+        costas_buf_.resize(n);
+        costas_.process(agc_buf_.data(), n, costas_buf_.data());
+    } else {
+        costas_buf_.resize(n);
+        costas_.process(rrc_buf_.data(), n, costas_buf_.data());
+    }
 
     // OQPSK: align the I rail with the Q rail (turns it into QPSK).
     const std::complex<float>* aligned = costas_buf_.data();
@@ -271,7 +309,21 @@ void PskDemod::process_block(const std::complex<float>* iq, std::size_t n,
     }
 
     symbols_.clear();
-    clock_.process(aligned, n, symbols_);
+    if (fixed_timing_) {
+        // Diagnostic only: sample at a constant spacing, carrying the phase
+        // across blocks. Valid when the symbol clock is exactly known.
+        if (fixed_phase_ <= 0.0) { fixed_phase_ = sps_ * 0.5; }
+        symbols_.clear();
+        symbols_.reserve(static_cast<std::size_t>(n / sps_) + 2);
+        while (fixed_phase_ < static_cast<double>(n)) {
+            const std::size_t idx = static_cast<std::size_t>(fixed_phase_);
+            symbols_.push_back(aligned[idx]);
+            fixed_phase_ += sps_;
+        }
+        fixed_phase_ -= static_cast<double>(n);
+    } else {
+        clock_.process(aligned, n, symbols_);
+    }
     if (symbols_.empty()) {
         return;
     }

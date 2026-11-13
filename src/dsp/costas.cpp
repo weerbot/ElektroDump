@@ -37,6 +37,7 @@ void CostasLoop::configure(double loop_bw, int order) {
 void CostasLoop::reset() {
     phase_ = 0.0;
     freq_ = 0.0;
+    power_ = 0.0;
 }
 
 void CostasLoop::process(const std::complex<float>* in, std::size_t n,
@@ -51,6 +52,14 @@ void CostasLoop::process(const std::complex<float>* in, std::size_t n,
         const double im = static_cast<double>(in[i].imag());
         const double mixed_re = re * c + im * s;
         const double mixed_im = im * c - re * s;
+
+        // Track the signal power so the loop gain does not depend on the front
+        // end's amplitude. A real L-band chain delivers ~0.03 after the RRC,
+        // which made alpha/beta effectively 30x too small: the loop held at
+        // 12 dB (residual error small) and lost lock at 5 dB (phase noise large).
+        const double inst_pwr = re * re + im * im;
+        power_ = (power_ > 0.0) ? power_ + 0.002 * (inst_pwr - power_)
+                                : inst_pwr;
         out[i] = std::complex<float>(static_cast<float>(mixed_re),
                                      static_cast<float>(mixed_im));
 
@@ -61,14 +70,20 @@ void CostasLoop::process(const std::complex<float>* in, std::size_t n,
             // every symbol, so it averages to zero and the loop never locks: the
             // constellation just circles. (QPSK's four-quadrant detector below
             // is decision-directed already, which is why only BPSK was broken.)
-            const double sign_re = (mixed_re > 0.0) ? 1.0 : -1.0;
-            error = sign_re * mixed_im;
+            // SatDump's BPSK detector is I*Q, not sign(I)*Q: with a loop
+            // bandwidth well below the symbol rate the per-symbol sign flip
+            // averages out, and it keeps the linear S-curve near lock where
+            // sign() is a hard nonlinearity. This only works when the input is
+            // AGC'd to unit amplitude, which demod_psk now does.
+            error = mixed_re * mixed_im;
         } else {
             const double sign_re = (mixed_re > 0.0) ? 1.0 : -1.0;
             const double sign_im = (mixed_im > 0.0) ? 1.0 : -1.0;
             error = sign_re * mixed_im - sign_im * mixed_re;
         }
-        error = clip(error, 1.0);
+        // Normalise to unit amplitude before the loop filter.
+        const double norm = 1.0 / (std::sqrt(power_) + 1e-9);
+        error = clip(error * norm, 1.0);
 
         freq_ += beta_ * error;
         phase_ += freq_ + alpha_ * error;

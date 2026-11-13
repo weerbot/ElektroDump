@@ -112,7 +112,16 @@ private:
     std::vector<std::complex<float>> aa_line_;
     std::size_t aa_pos_ = 0;
     std::size_t aa_count_ = 0;
-    double agc_gain_ = 1.0;
+    // AGC feeding the carrier loop, as SatDump does: normalise to unit
+    // amplitude so the loop gains mean the same thing at every input level.
+    static constexpr float kAgcRate = 1e-4f;
+    bool agc_enabled_ = true;
+    // Diagnostic: sample at a fixed phase instead of running the timing loop.
+    // Only meaningful when the true symbol clock is known exactly (synthetic).
+    bool fixed_timing_ = false;
+    double fixed_phase_ = 0.0;
+    float agc_gain_ = 1.0f;
+    std::vector<std::complex<float>> agc_buf_;
     double dec_rate_ = 0.0;
     std::complex<float> dec_sum_{0.0f, 0.0f};
     std::size_t dec_count_ = 0;

@@ -138,6 +138,10 @@ void decode_iq_file(const std::string& path, bool is_cu8, const char* section,
         cfg.get_double(sec + ".symbol_rate", hrit ? 1150000.0 : 294000.0);
     dcfg.rrc_alpha = cfg.get_double(sec + ".rrc_alpha", 0.5);
     dcfg.pll_bw = cfg.get_double(sec + ".pll_bw", hrit ? 0.001 : 0.0145);
+    // These two were live-only, so `decode` silently ran a different demod than
+    // the daemon: a bandwidth sweep through this command changed nothing.
+    dcfg.costas_bw = cfg.get_double(sec + ".costas_bw", dcfg.costas_bw);
+    dcfg.max_sps = static_cast<int>(cfg.get_int(sec + ".max_sps", dcfg.max_sps));
     dcfg.coarse_acq = cfg.get_bool(sec + ".coarse_acq", hrit);
     dcfg.coarse_acq_range_hz =
         cfg.get_double(sec + ".coarse_acq_range_hz", 100000.0);
@@ -147,6 +151,10 @@ void decode_iq_file(const std::string& path, bool is_cu8, const char* section,
         cfg.get_int(sec + ".sample_rate_hz", hrit ? 6000000 : 1000000));
     dsp::PskDemod demod;
     demod.configure(dcfg, sample_rate);
+    std::cerr << "demod: " << dcfg.symbol_rate << " baud @ " << sample_rate
+              << " sps, rrc " << dcfg.rrc_alpha << ", pll " << dcfg.pll_bw
+              << ", costas " << dcfg.costas_bw << ", max_sps " << dcfg.max_sps
+              << "\n";
 
     constexpr std::size_t kBlock = 16384;
     std::vector<std::complex<float>> iq(kBlock);

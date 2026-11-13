@@ -49,6 +49,10 @@ bool XritPipeline::configure(const Config& cfg, const PipelineParams& params) {
     demod_cfg.costas_bw =
         cfg.get_double(std::string(section) + ".costas_bw", 0.004);
     demod_cfg.rrc_taps = static_cast<int>(cfg.get_int("decode.rrc_taps", 33));
+    // Was never read here either, so the per-mode sample rate had no effect on
+    // how far the front end decimates before the loops.
+    demod_cfg.max_sps =
+        static_cast<int>(cfg.get_int(std::string(section) + ".max_sps", 3));
     // Coarse carrier acquisition: on by default for HRIT, where a realistic
     // LNB/LO offset exceeds the Costas loop's pull-in range.
     demod_cfg.coarse_acq = cfg.get_bool(std::string(section) + ".coarse_acq",

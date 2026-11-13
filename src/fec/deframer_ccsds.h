@@ -42,7 +42,10 @@ private:
     std::size_t cadu_bytes_ = 1024;
     uint32_t asm_ = 0x1ACFFC1D;
     uint32_t asm_inv_ = 0xE53003E2;
-    int max_errors_ = 0;
+    // CCSDS 131.0 allows the ASM to be acquired with up to 2 bit errors. At 0
+    // an exact 32-bit match is required, which at low SNR rejects about half the
+    // frames and drops the deframer out of lock; nothing ever set this.
+    int max_errors_ = 2;
 
     State state_ = State::NoSync;
     bool inversion_ = false;

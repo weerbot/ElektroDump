@@ -25,6 +25,7 @@ private:
     double beta_ = 0.0;
     double phase_ = 0.0;
     double freq_ = 0.0;
+    double power_ = 0.0;
     int order_ = 2;
 };
 
